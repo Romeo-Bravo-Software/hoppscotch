@@ -106,6 +106,10 @@ services:
     depends_on:
       hoppscotch-db:
         condition: service_healthy
+    # Use Google DNS for reliable external domain resolution (required for SendGrid/SMTP email delivery)
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     ports:
       - "3000:3000"
       - "3100:3100"

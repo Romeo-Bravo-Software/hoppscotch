@@ -60,48 +60,6 @@ export class TeamCollectionService {
   MAX_RETRIES = 5; // Maximum number of retries for database transactions
 
   /**
-   * Generate a Prisma query object representation of a collection and its child collections and requests
-   *
-   * @param folder CollectionFolder from client
-   * @param teamID The Team ID
-   * @param orderIndex Initial OrderIndex of
-   * @returns A Prisma query object to create a collection, its child collections and requests
-   */
-  private generatePrismaQueryObjForFBCollFolder(
-    folder: CollectionFolder,
-    teamID: string,
-    orderIndex: number,
-  ): Prisma.TeamCollectionCreateInput {
-    return {
-      title: folder.name,
-      team: {
-        connect: {
-          id: teamID,
-        },
-      },
-      requests: {
-        create: folder.requests.map((r, index) => ({
-          title: r.name,
-          team: {
-            connect: {
-              id: teamID,
-            },
-          },
-          request: r,
-          orderIndex: index + 1,
-        })),
-      },
-      orderIndex: orderIndex,
-      children: {
-        create: folder.folders.map((f, index) =>
-          this.generatePrismaQueryObjForFBCollFolder(f, teamID, index + 1),
-        ),
-      },
-      data: folder.data ?? undefined,
-    };
-  }
-
-  /**
    * Generate a JSON containing all the contents of a collection
    *
    * @param teamID The Team ID
@@ -214,8 +172,8 @@ export class TeamCollectionService {
       return E.left(TEAM_COLL_INVALID_JSON);
 
     let teamCollections: DBTeamCollection[] = [];
-    let queryList: Prisma.TeamCollectionCreateInput[] = [];
     try {
+      // Use longer timeout for imports as they can have deeply nested structures
       await this.prisma.$transaction(async (tx) => {
         try {
           // lock the rows
@@ -229,31 +187,22 @@ export class TeamCollectionService {
           });
           let lastOrderIndex = lastEntry ? lastEntry.orderIndex : 0;
 
-          // Generate Prisma Query Object for all child collections in collectionsList
-          queryList = collectionsList.right.map((x) =>
-            this.generatePrismaQueryObjForFBCollFolder(
-              x,
+          // Create collections using step-by-step hierarchy creation
+          // This avoids FK constraint issues with nested Prisma creates
+          for (const folder of collectionsList.right) {
+            const collection = await this.createCollectionHierarchy(
+              tx,
+              folder,
               teamID,
+              parentID,
               ++lastOrderIndex,
-            ),
-          );
-
-          // Create collections sequentially to avoid FK constraint violations
-          // when nested folders have requests that reference parent collection IDs
-          teamCollections = [];
-          for (const query of queryList) {
-            const collection = await tx.teamCollection.create({
-              data: {
-                ...query,
-                parent: parentID ? { connect: { id: parentID } } : undefined,
-              },
-            });
+            );
             teamCollections.push(collection);
           }
         } catch (error) {
           throw new ConflictException(error);
         }
-      });
+      }, { maxWait: 15000, timeout: 120000 }); // 2 minute timeout for large imports
     } catch (error) {
       console.error(
         'Error from TeamCollectionService.importCollectionsFromJSON',
@@ -270,6 +219,68 @@ export class TeamCollectionService {
     );
 
     return E.right(teamCollections);
+  }
+
+  /**
+   * Create a collection hierarchy (collection -> requests -> child collections) recursively.
+   * This step-by-step approach ensures FK constraints are satisfied at each step,
+   * making it reliable for deeply nested OpenAPI/Postman imports.
+   *
+   * @param tx Prisma transaction client
+   * @param folder CollectionFolder from client
+   * @param teamID The Team ID
+   * @param parentID The parent collection ID
+   * @param orderIndex OrderIndex of the collection
+   * @returns Created TeamCollection
+   */
+  private async createCollectionHierarchy(
+    tx: Prisma.TransactionClient,
+    folder: CollectionFolder,
+    teamID: string,
+    parentID: string | null,
+    orderIndex: number,
+  ): Promise<DBTeamCollection> {
+    // Step 1: Create the collection itself
+    const collection = await tx.teamCollection.create({
+      data: {
+        title: folder.name,
+        teamID,
+        parentID: parentID || undefined,
+        orderIndex,
+        data: folder.data ?? undefined,
+      },
+    });
+
+    // Step 2: Create all requests in this collection
+    if (folder.requests && folder.requests.length > 0) {
+      const requestPromises = folder.requests.map((request, index) =>
+        tx.teamRequest.create({
+          data: {
+            title: request.name,
+            teamID,
+            collectionID: collection.id,
+            request: request,
+            orderIndex: index + 1,
+          },
+        }),
+      );
+      await Promise.all(requestPromises);
+    }
+
+    // Step 3: Recursively create child collections
+    if (folder.folders && folder.folders.length > 0) {
+      for (let i = 0; i < folder.folders.length; i++) {
+        await this.createCollectionHierarchy(
+          tx,
+          folder.folders[i],
+          teamID,
+          collection.id,
+          i + 1,
+        );
+      }
+    }
+
+    return collection;
   }
 
   /**
@@ -563,10 +574,10 @@ export class TeamCollectionService {
             const deletedCollection = await tx.teamCollection.delete({
               where: { id: collection.id },
             });
-            
+
             // if collection is deleted, update siblings orderIndexes
             // if collection was deleted before the transaction started (race condition), do not update siblings orderIndexes
-            if (deletedCollection) { 
+            if (deletedCollection) {
               // update siblings orderIndexes
               await tx.teamCollection.updateMany({
                 where: {
@@ -629,7 +640,7 @@ export class TeamCollectionService {
     );
 
     return E.right(true);
-  } 
+  }
 
   /**
    * Change parentID of TeamCollection's
@@ -750,7 +761,7 @@ export class TeamCollectionService {
             // Throw error if collection is already a root collection
             return E.left(TEAM_COL_ALREADY_ROOT);
           }
-    
+
           // Change parent from child to root i.e child collection becomes a root collection
           // Move child collection into root and update orderIndexes for root teamCollections
           const updatedCollection = await this.changeParentAndUpdateOrderIndex(
@@ -759,30 +770,30 @@ export class TeamCollectionService {
             null,
           );
           if (E.isLeft(updatedCollection)) return E.left(updatedCollection.left);
-    
+
           this.pubsub.publish(
             `team_coll/${collection.right.teamID}/coll_moved`,
             updatedCollection.right,
           );
-    
+
           return E.right(updatedCollection.right);
         }
-    
+
         // destCollectionID != null i.e move into another collection
         if (collectionID === destCollectionID) {
           // Throw error if collectionID and destCollectionID are the same
           return E.left(TEAM_COLL_DEST_SAME);
         }
-    
+
         // Get collection details of destCollectionID
         const destCollection = await this.getCollection(destCollectionID, tx);
         if (E.isLeft(destCollection)) return E.left(TEAM_COLL_NOT_FOUND);
-    
+
         // Check if collection and destCollection belong to the same user account
         if (collection.right.teamID !== destCollection.right.teamID) {
           return E.left(TEAM_COLL_NOT_SAME_TEAM);
         }
-    
+
         // Check if collection is present on the parent tree for destCollection
         const checkIfParent = await this.isParent(
           collection.right,
@@ -795,7 +806,7 @@ export class TeamCollectionService {
 
         // lock the rows of the destination collection and its siblings
         await this.prisma.lockTeamCollectionByTeamAndParent(tx, destCollection.right.teamID, destCollection.right.parentID);
-    
+
         // Change parent from null to teamCollection i.e collection becomes a child collection
         // Move root/child collection into another child collection and update orderIndexes of the previous parent
         const updatedCollection = await this.changeParentAndUpdateOrderIndex(
@@ -887,7 +898,7 @@ export class TeamCollectionService {
                   orderIndex: { decrement: 1 },
                 },
               });
-  
+
               // Step 2: Update orderIndex of collection to length of list
               await tx.teamCollection.update({
                 where: { id: collection.right.id },
@@ -900,7 +911,7 @@ export class TeamCollectionService {
                 },
               });
             }
-            
+
           } catch (error) {
             throw new ConflictException(error);
           }

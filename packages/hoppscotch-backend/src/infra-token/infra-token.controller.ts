@@ -89,7 +89,7 @@ export class InfraTokensController {
 
     return plainToInstance(
       CreateUserInvitationResponse,
-      { invitationLink: process.env.VITE_BASE_URL },
+      { invitationLink: createdInvitations.right.right.invitationLink },
       {
         excludeExtraneousValues: true,
         enableImplicitConversion: true,
