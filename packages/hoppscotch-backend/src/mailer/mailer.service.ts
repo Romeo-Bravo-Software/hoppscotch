@@ -28,10 +28,24 @@ export class MailerService {
     private readonly configService: ConfigService,
   ) {
     // Initialize SendGrid if enabled (read from environment variables)
-    const useSendGrid = process.env.USE_SENDGRID;
-    const sendGridApiKey = process.env.SENDGRID_API_KEY;
+    const useSendGrid = this.configService.get('USE_SENDGRID');
+    const sendGridApiKey = this.configService.get('SENDGRID_API_KEY');
+    const mailerAddressFrom = this.configService.get('MAILER_ADDRESS_FROM');
 
-    if (useSendGrid === 'true' && sendGridApiKey) {
+    if (useSendGrid === 'true') {
+      if (!sendGridApiKey) {
+        console.error(
+          'SendGrid is enabled but SENDGRID_API_KEY is not configured',
+        );
+        return;
+      }
+      if (!mailerAddressFrom) {
+        console.error(
+          'SendGrid is enabled but MAILER_ADDRESS_FROM is not configured',
+        );
+        return;
+      }
+
       sgMail.setApiKey(sendGridApiKey);
       this.sendGridInitialized = true;
       console.log('SendGrid mail service initialized');
@@ -43,7 +57,10 @@ export class MailerService {
    * @returns 'sendgrid' | 'smtp' | false
    */
   private getEnabledMailer(): 'sendgrid' | 'smtp' | false {
-    if (process.env.USE_SENDGRID === 'true' && this.sendGridInitialized) {
+    if (
+      this.configService.get('USE_SENDGRID') === 'true' &&
+      this.sendGridInitialized
+    ) {
       return 'sendgrid';
     }
     if (this.configService.get('INFRA.MAILER_SMTP_ENABLE') === 'true') {
@@ -97,9 +114,15 @@ export class MailerService {
    */
   private async sendViaSendGrid(to: string, mailDesc: MailDescriptionType) {
     try {
+      const mailerAddressFrom = this.configService.get('MAILER_ADDRESS_FROM');
+      if (!mailerAddressFrom) {
+        console.error('MAILER_ADDRESS_FROM is not configured');
+        return throwErr(EMAIL_FAILED);
+      }
+
       const msg = {
         to,
-        from: process.env.MAILER_ADDRESS_FROM,
+        from: mailerAddressFrom,
         subject: this.resolveSubjectForMailDesc(mailDesc),
         html: this.compileTemplate(mailDesc),
       };

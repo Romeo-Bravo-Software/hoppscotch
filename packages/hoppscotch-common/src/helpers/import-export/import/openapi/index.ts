@@ -1111,7 +1111,7 @@ const createPathNode = (): PathNode => ({
 
 const buildPathBasedFolders = (
   pathsWithRequests: Array<{ path: string; request: HoppRESTRequest }>
-): HoppCollection[] => {
+): { folders: HoppCollection[]; rootRequests: HoppRESTRequest[] } => {
   const root = createPathNode()
 
   // Build the tree structure
@@ -1164,9 +1164,8 @@ const buildPathBasedFolders = (
     subfolders.push(convertNodeToCollection(childNode, childName))
   })
 
-  // Return nested folders (not separate root collections)
-  // The parent collection will be created in convertOpenApiDocsToHopp
-  return subfolders
+  // Return nested folders and root-level requests separately
+  return { folders: subfolders, rootRequests: root.requests }
 }
 
 const convertOpenApiDocsToHopp = (
@@ -1196,19 +1195,22 @@ const convertOpenApiDocsToHopp = (
     const pathsWithRequests = pathsWithData.map(({ request }) => ({
       path: request.endpoint
         .replace(/^https?:\/\/[^/]+/, "") // Remove base URL
-        .replace(/<<[^>]+>>/g, (match: string) => match.slice(2, -2)), // Convert <<var>> back to {var} temporarily for path parsing
+        .replace(
+          /<<([^>]+)>>/g,
+          (_match: string, inner: string) => `{${inner}}`
+        ), // Convert <<var>> back to {var} for path parsing
       request,
     }))
 
     // Build nested folder structure based on URL paths
-    const folders = buildPathBasedFolders(pathsWithRequests)
+    const { folders, rootRequests } = buildPathBasedFolders(pathsWithRequests)
 
     // Create single root collection containing all nested folders
     // This ensures proper parent-child relationship during import
     return makeCollection({
       name,
-      folders, // Nested folders work fine when part of single collection
-      requests: [], // Root-level requests (if any from buildPathBasedFolders)
+      folders,
+      requests: rootRequests, // Include root-level requests (e.g., paths like "/")
       auth: { authType: "inherit", authActive: true },
       headers: [],
       variables: [],

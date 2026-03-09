@@ -267,16 +267,30 @@ export class TeamCollectionService {
       await Promise.all(requestPromises);
     }
 
-    // Step 3: Recursively create child collections
+    // Step 3: Create child collections (siblings) in parallel batches
+    // Siblings share the same parent (already exists), so they can be created in parallel
+    // We batch them to prevent connection pool exhaustion on very wide structures
     if (folder.folders && folder.folders.length > 0) {
-      for (let i = 0; i < folder.folders.length; i++) {
-        await this.createCollectionHierarchy(
-          tx,
-          folder.folders[i],
-          teamID,
-          collection.id,
-          i + 1,
+      const BATCH_SIZE = 30; // Process 30 siblings at a time
+
+      for (let batchStart = 0; batchStart < folder.folders.length; batchStart += BATCH_SIZE) {
+        const batch = folder.folders.slice(
+          batchStart,
+          Math.min(batchStart + BATCH_SIZE, folder.folders.length),
         );
+
+        const childPromises = batch.map((childFolder, batchIndex) => {
+          const actualIndex = batchStart + batchIndex;
+          return this.createCollectionHierarchy(
+            tx,
+            childFolder,
+            teamID,
+            collection.id,
+            actualIndex + 1,
+          );
+        });
+
+        await Promise.all(childPromises);
       }
     }
 

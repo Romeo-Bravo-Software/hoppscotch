@@ -257,7 +257,8 @@ const getHoppResponses = (
             ),
           }),
         }
-        return [responseName, res]
+        // Use index-prefixed key to guarantee uniqueness and prevent data loss from name collisions
+        return [`${index}_${responseName}`, res]
       })
     )
   )
