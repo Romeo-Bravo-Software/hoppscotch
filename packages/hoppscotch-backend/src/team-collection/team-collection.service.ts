@@ -64,35 +64,32 @@ export class TeamCollectionService {
    *
    * @param teamID The Team ID
    * @param collectionID The Collection ID
-   * @param withChildren Whether to include child collections and their requests
    * @returns A JSON string containing all the contents of a collection
    */
   async exportCollectionToJSONObject(
     teamID: string,
     collectionID: string,
-    withChildren: boolean = true,
   ): Promise<E.Right<CollectionFolder> | E.Left<string>> {
     const collection = await this.getCollection(collectionID);
     if (E.isLeft(collection)) return E.left(TEAM_INVALID_COLL_ID);
 
     const childrenCollectionObjects = [];
-    if (withChildren) {
-      const childrenCollection = await this.prisma.teamCollection.findMany({
-        where: {
-          teamID,
-          parentID: collectionID,
-        },
-        orderBy: {
-          orderIndex: 'asc',
-        },
-      });
 
-      for (const coll of childrenCollection) {
-        const result = await this.exportCollectionToJSONObject(teamID, coll.id);
-        if (E.isLeft(result)) return E.left(result.left);
+    const childrenCollection = await this.prisma.teamCollection.findMany({
+      where: {
+        teamID,
+        parentID: collectionID,
+      },
+      orderBy: {
+        orderIndex: 'asc',
+      },
+    });
 
-        childrenCollectionObjects.push(result.right);
-      }
+    for (const coll of childrenCollection) {
+      const result = await this.exportCollectionToJSONObject(teamID, coll.id);
+      if (E.isLeft(result)) return E.left(result.left);
+
+      childrenCollectionObjects.push(result.right);
     }
 
     const requests = await this.prisma.teamRequest.findMany({
@@ -177,7 +174,11 @@ export class TeamCollectionService {
       await this.prisma.$transaction(async (tx) => {
         try {
           // lock the rows
-          await this.prisma.lockTeamCollectionByTeamAndParent(tx, teamID, parentID);
+          await this.prisma.lockTeamCollectionByTeamAndParent(
+            tx,
+            teamID,
+            parentID,
+          );
 
           // Get the last order index
           const lastEntry = await tx.teamCollection.findFirst({
@@ -428,15 +429,18 @@ export class TeamCollectionService {
    * @param collectionID The collection ID
    * @returns An Either of the Collection details
    */
-  async getCollection(collectionID: string, tx: Prisma.TransactionClient | null = null) {
+  async getCollection(
+    collectionID: string,
+    tx: Prisma.TransactionClient | null = null,
+  ) {
     try {
-      const teamCollection = await (tx || this.prisma).teamCollection.findUniqueOrThrow(
-        {
-          where: {
-            id: collectionID,
-          },
+      const teamCollection = await (
+        tx || this.prisma
+      ).teamCollection.findUniqueOrThrow({
+        where: {
+          id: collectionID,
         },
-      );
+      });
       return E.right(teamCollection);
     } catch (error) {
       return E.left(TEAM_COLL_NOT_FOUND);
@@ -500,7 +504,11 @@ export class TeamCollectionService {
       teamCollection = await this.prisma.$transaction(async (tx) => {
         try {
           // lock the rows
-          await this.prisma.lockTeamCollectionByTeamAndParent(tx, teamID, parentID);
+          await this.prisma.lockTeamCollectionByTeamAndParent(
+            tx,
+            teamID,
+            parentID,
+          );
 
           // fetch last collection
           const lastCollection = await tx.teamCollection.findFirst({
@@ -583,7 +591,11 @@ export class TeamCollectionService {
         await this.prisma.$transaction(async (tx) => {
           try {
             // lock the rows
-            await this.prisma.lockTeamCollectionByTeamAndParent(tx, collection.teamID, collection.parentID);
+            await this.prisma.lockTeamCollectionByTeamAndParent(
+              tx,
+              collection.teamID,
+              collection.parentID,
+            );
 
             const deletedCollection = await tx.teamCollection.delete({
               where: { id: collection.id },
@@ -669,11 +681,10 @@ export class TeamCollectionService {
     newParentID: string | null,
   ) {
     // fetch last collection
-    const lastCollectionUnderNewParent =
-      await tx.teamCollection.findFirst({
-        where: { teamID: collection.teamID, parentID: newParentID },
-        orderBy: { orderIndex: 'desc' },
-      });
+    const lastCollectionUnderNewParent = await tx.teamCollection.findFirst({
+      where: { teamID: collection.teamID, parentID: newParentID },
+      orderBy: { orderIndex: 'desc' },
+    });
 
     // decrement orderIndex of all next sibling collections from original collection
     await tx.teamCollection.updateMany({
@@ -767,7 +778,11 @@ export class TeamCollectionService {
         const collection = await this.getCollection(collectionID, tx);
         if (E.isLeft(collection)) return E.left(collection.left);
         // lock the rows of the collection and its siblings
-        await this.prisma.lockTeamCollectionByTeamAndParent(tx, collection.right.teamID, collection.right.parentID);
+        await this.prisma.lockTeamCollectionByTeamAndParent(
+          tx,
+          collection.right.teamID,
+          collection.right.parentID,
+        );
         // destCollectionID == null i.e move collection to root
         if (!destCollectionID) {
           if (!collection.right.parentID) {
@@ -838,11 +853,7 @@ export class TeamCollectionService {
         return E.right(updatedCollection.right);
       });
     } catch (error) {
-
-      console.error(
-        'Error from TeamCollectionService.moveCollection',
-        error,
-      );
+      console.error('Error from TeamCollectionService.moveCollection', error);
       return E.left(TEAM_COL_REORDERING_FAILED);
     }
   }
@@ -854,7 +865,11 @@ export class TeamCollectionService {
    * @param teamID The Team ID (required when collectionID is null for root collections)
    * @returns Number of collections
    */
-  getCollectionCount(collectionID: string, teamID: string, tx: Prisma.TransactionClient | null = null): Promise<number> {
+  getCollectionCount(
+    collectionID: string,
+    teamID: string,
+    tx: Prisma.TransactionClient | null = null,
+  ): Promise<number> {
     return (tx || this.prisma).teamCollection.count({
       where: { parentID: collectionID, teamID: teamID },
     });
@@ -898,7 +913,7 @@ export class TeamCollectionService {
 
             // if collection is found, update orderIndexes of siblings
             // if collection was deleted before the transaction started (race condition), do not update siblings orderIndexes
-            if(collectionInTx) {
+            if (collectionInTx) {
               // Step 1: Decrement orderIndex of all items that come after collection.orderIndex till end of list of items
               await tx.teamCollection.updateMany({
                 where: {
@@ -958,7 +973,11 @@ export class TeamCollectionService {
       await this.prisma.$transaction(async (tx) => {
         try {
           // Step 0: lock the rows
-          await this.prisma.lockTeamCollectionByTeamAndParent(tx, collection.right.teamID, collection.right.parentID);
+          await this.prisma.lockTeamCollectionByTeamAndParent(
+            tx,
+            collection.right.teamID,
+            collection.right.parentID,
+          );
 
           const collectionInTx = await tx.teamCollection.findFirst({
             where: { id: collectionID },
@@ -971,10 +990,10 @@ export class TeamCollectionService {
 
           // if collection and subsequentCollection are found, update orderIndexes of siblings
           // if collection or subsequentCollection was deleted before the transaction started (race condition), do not update siblings orderIndexes
-          if(collectionInTx && subsequentCollectionInTx) {
+          if (collectionInTx && subsequentCollectionInTx) {
             // Step 1: Determine if we are moving collection up or down the list
             const isMovingUp =
-            subsequentCollectionInTx.orderIndex < collectionInTx.orderIndex;
+              subsequentCollectionInTx.orderIndex < collectionInTx.orderIndex;
 
             // Step 2: Update OrderIndex of items in list depending on moving up or down
             const updateFrom = isMovingUp
@@ -1521,7 +1540,11 @@ export class TeamCollectionService {
 
     try {
       await this.prisma.$transaction(async (tx) => {
-        await this.prisma.lockTeamCollectionByTeamAndParent(tx, teamID, parentID);
+        await this.prisma.lockTeamCollectionByTeamAndParent(
+          tx,
+          teamID,
+          parentID,
+        );
 
         const collections = await tx.teamCollection.findMany({
           where: { teamID, parentID },
