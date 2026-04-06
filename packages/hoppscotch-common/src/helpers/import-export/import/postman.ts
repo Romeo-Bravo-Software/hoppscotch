@@ -53,11 +53,14 @@ const isSchemaVersionSupported = (schema?: string): boolean => {
 /**
  * Extracts the collection schema from raw JSON data
  * Note: PMCollection SDK doesn't expose .info.schema, so we parse raw JSON
+ * Handles both standard format and Postman API format with "collection" wrapper
  */
 const getCollectionSchema = (jsonStr: string): string | null => {
   try {
     const data = JSON.parse(jsonStr)
-    return data?.info?.schema ?? null
+    // Handle both { info: {...} } and { collection: { info: {...} } }
+    const collectionData = data?.collection ?? data
+    return collectionData?.info?.schema ?? null
   } catch {
     return null
   }
@@ -86,11 +89,16 @@ const readPMCollection = (def: string) =>
   pipe(
     def,
     safeParseJSON,
-    O.chain((data) =>
-      O.tryCatch(() => {
-        return new PMCollection(data)
+    O.chain((data) => {
+      // Handle Postman API format which wraps the collection in a "collection" property
+      // Standard format: { info: {...}, item: [...] }
+      // API format: { collection: { info: {...}, item: [...] } }
+      const collectionData = data?.collection ?? data
+
+      return O.tryCatch(() => {
+        return new PMCollection(collectionData)
       })
-    )
+    })
   )
 
 const parseDescription = (descField?: string | DescriptionDefinition) => {

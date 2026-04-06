@@ -173,32 +173,47 @@ export class TeamCollectionService {
       // Use longer timeout for imports as they can have deeply nested structures
       await this.prisma.$transaction(async (tx) => {
         try {
-          // lock the rows
+          // Lock and get the starting orderIndex in a single operation
           await this.prisma.lockTeamCollectionByTeamAndParent(
             tx,
             teamID,
             parentID,
           );
 
-          // Get the last order index
           const lastEntry = await tx.teamCollection.findFirst({
             where: { teamID, parentID },
             orderBy: { orderIndex: 'desc' },
             select: { orderIndex: true },
           });
-          let lastOrderIndex = lastEntry ? lastEntry.orderIndex : 0;
+          const startingOrderIndex = lastEntry ? lastEntry.orderIndex : 0;
 
-          // Create collections using step-by-step hierarchy creation
-          // This avoids FK constraint issues with nested Prisma creates
-          for (const folder of collectionsList.right) {
-            const collection = await this.createCollectionHierarchy(
-              tx,
-              folder,
-              teamID,
-              parentID,
-              ++lastOrderIndex,
+          // Pre-assign orderIndexes to enable parallel creation
+          const foldersWithOrderIndex = collectionsList.right.map((folder, index) => ({
+            folder,
+            orderIndex: startingOrderIndex + index + 1,
+          }));
+
+          // Process root collections in parallel batches for better performance
+          const BATCH_SIZE = 50; // Increased from sequential to 50 parallel
+
+          for (let batchStart = 0; batchStart < foldersWithOrderIndex.length; batchStart += BATCH_SIZE) {
+            const batch = foldersWithOrderIndex.slice(
+              batchStart,
+              Math.min(batchStart + BATCH_SIZE, foldersWithOrderIndex.length),
             );
-            teamCollections.push(collection);
+
+            const batchPromises = batch.map(({ folder, orderIndex }) =>
+              this.createCollectionHierarchy(
+                tx,
+                folder,
+                teamID,
+                parentID,
+                orderIndex,
+              )
+            );
+
+            const batchResults = await Promise.all(batchPromises);
+            teamCollections.push(...batchResults);
           }
         } catch (error) {
           throw new ConflictException(error);
@@ -212,6 +227,7 @@ export class TeamCollectionService {
       return E.left(TEAM_COLL_CREATION_FAILED);
     }
 
+    // Publish events in a single batch after transaction completes
     teamCollections.forEach((collection) =>
       this.pubsub.publish(
         `team_coll/${teamID}/coll_added`,
@@ -226,6 +242,11 @@ export class TeamCollectionService {
    * Create a collection hierarchy (collection -> requests -> child collections) recursively.
    * This step-by-step approach ensures FK constraints are satisfied at each step,
    * making it reliable for deeply nested OpenAPI/Postman imports.
+   *
+   * Optimizations:
+   * - Uses createMany for bulk request insertion
+   * - Processes sibling collections in parallel batches
+   * - Pre-computed orderIndexes enable parallel root collection creation
    *
    * @param tx Prisma transaction client
    * @param folder CollectionFolder from client
@@ -252,27 +273,26 @@ export class TeamCollectionService {
       },
     });
 
-    // Step 2: Create all requests in this collection
+    // Step 2: Create all requests in this collection using bulk insert for better performance
     if (folder.requests && folder.requests.length > 0) {
-      const requestPromises = folder.requests.map((request, index) =>
-        tx.teamRequest.create({
-          data: {
-            title: request.name,
-            teamID,
-            collectionID: collection.id,
-            request: request,
-            orderIndex: index + 1,
-          },
-        }),
-      );
-      await Promise.all(requestPromises);
+      // Use createMany for bulk insert (much faster than individual creates)
+      await tx.teamRequest.createMany({
+        data: folder.requests.map((request, index) => ({
+          title: request.name,
+          teamID,
+          collectionID: collection.id,
+          request: request,
+          orderIndex: index + 1,
+        })),
+        skipDuplicates: false, // Ensure we catch any constraint violations
+      });
     }
 
     // Step 3: Create child collections (siblings) in parallel batches
     // Siblings share the same parent (already exists), so they can be created in parallel
     // We batch them to prevent connection pool exhaustion on very wide structures
     if (folder.folders && folder.folders.length > 0) {
-      const BATCH_SIZE = 30; // Process 30 siblings at a time
+      const BATCH_SIZE = 100; // Increased from 30 to 100 for faster processing
 
       for (let batchStart = 0; batchStart < folder.folders.length; batchStart += BATCH_SIZE) {
         const batch = folder.folders.slice(

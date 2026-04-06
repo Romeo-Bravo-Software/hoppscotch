@@ -77,10 +77,10 @@ export class MailerService {
   private resolveSubjectForMailDesc(mailDesc: MailDescriptionType): string {
     switch (mailDesc.template) {
       case 'team-invitation':
-        return `A user has invited you to join a team workspace in Hoppscotch`;
+        return `A user has invited you to join a team workspace in RBS PostMan`;
 
       case 'user-invitation':
-        return 'Sign in to Hoppscotch';
+        return 'Sign in to RBS PostMan';
     }
   }
 

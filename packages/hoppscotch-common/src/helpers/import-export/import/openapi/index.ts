@@ -119,17 +119,23 @@ type OpenAPIOperationType =
   | OpenAPIV3.OperationObject
   | OpenAPIV31.OperationObject
 
-// Resolve request name: operationId > summary > title > "Untitled Request"
+// Resolve request name: operationId > summary > title > first tag > "Untitled Request"
 const getOpenAPIOperationName = (info: OpenAPIOperationType): string => {
   const title =
     objectHasProperty(info, "title") && typeof info.title === "string"
       ? info.title
       : undefined
 
+  const firstTag =
+    info.tags && info.tags.length > 0 && typeof info.tags[0] === "string"
+      ? info.tags[0]
+      : undefined
+
   const candidates: Array<string | undefined> = [
     info.operationId,
     info.summary,
     title,
+    firstTag,
   ]
 
   for (const candidate of candidates) {
@@ -1023,7 +1029,17 @@ const parseOpenAPIUrl = (
   if (objectHasProperty(doc, "servers")) {
     // TODO: dynamically add server URL value as variable in the environment if available, or notify user to add it.
     const serverUrl = doc.servers?.[0]?.url
-    return !serverUrl || serverUrl === "./" ? "<<baseUrl>>" : serverUrl
+    if (!serverUrl || serverUrl === "./") {
+      return "<<baseUrl>>"
+    }
+
+    // Check if URL is relative (starts with / but doesn't have protocol)
+    // Relative paths should be appended to baseUrl
+    if (serverUrl.startsWith("/") && !serverUrl.startsWith("//")) {
+      return `<<baseUrl>>${serverUrl}`
+    }
+
+    return serverUrl
   }
 
   // If the document is neither v2 nor v3 or missing required fields

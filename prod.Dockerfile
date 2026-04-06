@@ -128,14 +128,14 @@ ENV DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholde
 
 COPY . .
 # Download GitHub tarball dependencies with curl (more reliable than pnpm DNS resolution)
-RUN curl -L -o /usr/src/app/plugin-appload.tar.gz "https://codeload.github.com/CuriousCorrelation/tauri-plugin-appload/tar.gz/168ff9533258a56de184fb69ad32f8a7f61bae0d" && \
+RUN curl -L -o /usr/src/app/plugin-appload.tar.gz "https://codeload.github.com/CuriousCorrelation/tauri-plugin-appload/tar.gz/0d58d53be2bc75aeb5916bd0d77794fd209426af" && \
     curl -L -o /usr/src/app/plugin-relay.tar.gz "https://codeload.github.com/CuriousCorrelation/tauri-plugin-relay/tar.gz/7cf09c1ad31e228758738c2f4e1c8fe9cc141291" && \
     # Replace GitHub URLs with absolute file paths in ALL package.json files that use these plugins
     # Match the actual format used in package.json: github:owner/repo#commit
-    sed -i 's|"github:CuriousCorrelation/tauri-plugin-appload#168ff9533258a56de184fb69ad32f8a7f61bae0d"|"file:///usr/src/app/plugin-appload.tar.gz"|g' packages/hoppscotch-common/package.json && \
+    sed -i 's|"github:CuriousCorrelation/tauri-plugin-appload#0d58d53be2bc75aeb5916bd0d77794fd209426af"|"file:///usr/src/app/plugin-appload.tar.gz"|g' packages/hoppscotch-common/package.json && \
     sed -i 's|"github:CuriousCorrelation/tauri-plugin-relay#7cf09c1ad31e228758738c2f4e1c8fe9cc141291"|"file:///usr/src/app/plugin-relay.tar.gz"|g' packages/hoppscotch-kernel/package.json && \
-    sed -i 's|"github:CuriousCorrelation/tauri-plugin-appload#168ff9533258a56de184fb69ad32f8a7f61bae0d"|"file:///usr/src/app/plugin-appload.tar.gz"|g' packages/hoppscotch-selfhost-web/package.json && \
-    sed -i 's|"github:CuriousCorrelation/tauri-plugin-appload#168ff9533258a56de184fb69ad32f8a7f61bae0d"|"file:///usr/src/app/plugin-appload.tar.gz"|g' packages/hoppscotch-desktop/package.json
+    sed -i 's|"github:CuriousCorrelation/tauri-plugin-appload#0d58d53be2bc75aeb5916bd0d77794fd209426af"|"file:///usr/src/app/plugin-appload.tar.gz"|g' packages/hoppscotch-selfhost-web/package.json && \
+    sed -i 's|"github:CuriousCorrelation/tauri-plugin-appload#0d58d53be2bc75aeb5916bd0d77794fd209426af"|"file:///usr/src/app/plugin-appload.tar.gz"|g' packages/hoppscotch-desktop/package.json
 
 # Install with regenerated lockfile (no need for pnpm fetch since we're regenerating)
 RUN pnpm install -f --no-frozen-lockfile
