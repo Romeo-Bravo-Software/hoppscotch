@@ -106,6 +106,13 @@ services:
     depends_on:
       hoppscotch-db:
         condition: service_healthy
+    # Optional external DNS for reliable external domain resolution (for example,
+    # SendGrid/SMTP email delivery).
+    # Override defaults by setting HOPPSCOTCH_DNS_1 and HOPPSCOTCH_DNS_2 in your environment
+    # or .env file.
+    dns:
+      - ${HOPPSCOTCH_DNS_1:-8.8.8.8}
+      - ${HOPPSCOTCH_DNS_2:-8.8.4.4}
     ports:
       - "3000:3000"
       - "3100:3100"

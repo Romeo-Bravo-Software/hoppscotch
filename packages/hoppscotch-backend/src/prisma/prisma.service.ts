@@ -38,8 +38,8 @@ export class PrismaService
     super({
       adapter,
       transactionOptions: {
-        maxWait: 5000,
-        timeout: 10000,
+        maxWait: 5000, // 5s - time to wait to acquire a transaction lock
+        timeout: 10000, // 10s - max time a transaction can run (sufficient for most CRUD operations)
       },
     });
 

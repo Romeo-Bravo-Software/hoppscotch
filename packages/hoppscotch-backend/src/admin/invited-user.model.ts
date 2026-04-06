@@ -21,4 +21,10 @@ export class InvitedUser {
     description: 'Date when the user invitation was sent',
   })
   invitedOn: Date;
+
+  @Field({
+    description: 'Invitation link with magic token for sign-in',
+    nullable: true,
+  })
+  invitationLink?: string;
 }

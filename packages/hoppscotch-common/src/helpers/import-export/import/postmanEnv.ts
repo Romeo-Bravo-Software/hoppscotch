@@ -8,18 +8,23 @@ import { IMPORTER_INVALID_FILE_FORMAT } from "."
 import { uniqueID } from "~/helpers/utils/uniqueID"
 import { replacePMVarTemplating } from "./postman"
 
-const postmanEnvSchema = z.object({
-  name: z.string(),
-  values: z.array(
-    z.object({
-      key: z.string(),
-      value: z.string(),
-      type: z.string(),
-    })
-  ),
-})
-
-type PostmanEnv = z.infer<typeof postmanEnvSchema>
+const postmanEnvSchema = z
+  .object({
+    name: z.string(),
+    values: z.array(
+      z
+        .object({
+          key: z.string(),
+          value: z
+            .union([z.string(), z.number(), z.boolean()])
+            .transform(String), // Allow different types, convert to string
+          type: z.string().optional().default("default"), // Make type optional
+          enabled: z.boolean().optional(), // Allow enabled field
+        })
+        .passthrough() // Allow additional fields like id, etc.
+    ),
+  })
+  .passthrough() // Allow additional fields like id, createdAt, owner, etc.
 
 export const postmanEnvImporter = (contents: string[]) => {
   const parsedContents = contents.map((str) => safeParseJSON(str, true))
@@ -28,19 +33,27 @@ export const postmanEnvImporter = (contents: string[]) => {
   }
 
   const parsedValues = parsedContents.flatMap((parsed) => {
-    const unwrappedEntry = O.toNullable(parsed) as PostmanEnv[] | null
+    let data = O.toNullable(parsed) as any
 
-    if (unwrappedEntry) {
-      return unwrappedEntry.map((entry) => ({
-        ...entry,
-        values: entry.values?.map((valueEntry) => ({
-          ...valueEntry,
-          value: String(valueEntry.value),
-          type: String(valueEntry.type),
-        })),
-      }))
+    if (!data) return []
+
+    // Handle array format: [{environment: {...}}]
+    if (Array.isArray(data)) {
+      // Check if array has one element with 'environment' property
+      if (data.length === 1 && data[0]?.environment) {
+        data = data[0].environment
+        return [data]
+      }
+      return data
     }
-    return null
+
+    // Handle object format: {environment: {...}}
+    if (data.environment) {
+      data = data.environment
+    }
+
+    // Wrap single object in array
+    return [data]
   })
 
   const validationResult = z.array(postmanEnvSchema).safeParse(parsedValues)

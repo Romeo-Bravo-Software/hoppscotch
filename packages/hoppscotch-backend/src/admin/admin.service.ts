@@ -131,6 +131,7 @@ export class AdminService {
       adminUid: dbInvitedUser.adminUid,
       inviteeEmail: dbInvitedUser.inviteeEmail,
       invitedOn: dbInvitedUser.invitedOn,
+      invitationLink: `${this.configService.get('VITE_BASE_URL')}`,
     };
 
     // Publish invited user subscription

@@ -25,7 +25,7 @@
       v-else-if="!currentUser"
       class="flex flex-1 flex-col items-center justify-center"
     >
-      <h1 class="heading">Login to Hoppscotch Desktop</h1>
+      <h1 class="heading">Login to RBS PostMan Desktop</h1>
       <p class="mt-2 text-center">Please login to continue.</p>
       <HoppButtonPrimary
         :label="t('auth.login_to_hoppscotch')"
@@ -36,7 +36,7 @@
     <div v-else class="flex flex-1 flex-col items-center justify-center">
       <h1 class="heading">Confirm Desktop Login</h1>
       <p class="mt-2 text-center">
-        Are you sure you want to confirm login to your account in Hoppscotch
+        Are you sure you want to confirm login to your account in RBS PostMan
         Desktop ?
       </p>
 
@@ -53,7 +53,7 @@
     <footer class="p-4">
       <HoppButtonSecondary
         class="!font-bold tracking-wide !text-secondaryDark"
-        label="HOPPSCOTCH"
+        label="RBS POSTMAN"
         to="/"
       />
     </footer>

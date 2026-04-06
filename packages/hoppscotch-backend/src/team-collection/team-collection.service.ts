@@ -60,48 +60,6 @@ export class TeamCollectionService {
   MAX_RETRIES = 5; // Maximum number of retries for database transactions
 
   /**
-   * Generate a Prisma query object representation of a collection and its child collections and requests
-   *
-   * @param folder CollectionFolder from client
-   * @param teamID The Team ID
-   * @param orderIndex Initial OrderIndex of
-   * @returns A Prisma query object to create a collection, its child collections and requests
-   */
-  private generatePrismaQueryObjForFBCollFolder(
-    folder: CollectionFolder,
-    teamID: string,
-    orderIndex: number,
-  ): Prisma.TeamCollectionCreateInput {
-    return {
-      title: folder.name,
-      team: {
-        connect: {
-          id: teamID,
-        },
-      },
-      requests: {
-        create: folder.requests.map((r, index) => ({
-          title: r.name,
-          team: {
-            connect: {
-              id: teamID,
-            },
-          },
-          request: r,
-          orderIndex: index + 1,
-        })),
-      },
-      orderIndex: orderIndex,
-      children: {
-        create: folder.folders.map((f, index) =>
-          this.generatePrismaQueryObjForFBCollFolder(f, teamID, index + 1),
-        ),
-      },
-      data: folder.data ?? undefined,
-    };
-  }
-
-  /**
    * Generate a JSON containing all the contents of a collection
    *
    * @param teamID The Team ID
@@ -211,47 +169,56 @@ export class TeamCollectionService {
       return E.left(TEAM_COLL_INVALID_JSON);
 
     let teamCollections: DBTeamCollection[] = [];
-    let queryList: Prisma.TeamCollectionCreateInput[] = [];
     try {
+      // Use longer timeout for imports as they can have deeply nested structures
       await this.prisma.$transaction(async (tx) => {
         try {
-          // lock the rows
+          // Lock and get the starting orderIndex in a single operation
           await this.prisma.lockTeamCollectionByTeamAndParent(
             tx,
             teamID,
             parentID,
           );
 
-          // Get the last order index
           const lastEntry = await tx.teamCollection.findFirst({
             where: { teamID, parentID },
             orderBy: { orderIndex: 'desc' },
             select: { orderIndex: true },
           });
-          let lastOrderIndex = lastEntry ? lastEntry.orderIndex : 0;
+          const startingOrderIndex = lastEntry ? lastEntry.orderIndex : 0;
 
-          // Generate Prisma Query Object for all child collections in collectionsList
-          queryList = collectionsList.right.map((x) =>
-            this.generatePrismaQueryObjForFBCollFolder(
-              x,
-              teamID,
-              ++lastOrderIndex,
-            ),
-          );
+          // Pre-assign orderIndexes to enable parallel creation
+          const foldersWithOrderIndex = collectionsList.right.map((folder, index) => ({
+            folder,
+            orderIndex: startingOrderIndex + index + 1,
+          }));
 
-          const promises = queryList.map((query) =>
-            tx.teamCollection.create({
-              data: {
-                ...query,
-                parent: parentID ? { connect: { id: parentID } } : undefined,
-              },
-            }),
-          );
-          teamCollections = await Promise.all(promises);
+          // Process root collections in parallel batches for better performance
+          const BATCH_SIZE = 50; // Increased from sequential to 50 parallel
+
+          for (let batchStart = 0; batchStart < foldersWithOrderIndex.length; batchStart += BATCH_SIZE) {
+            const batch = foldersWithOrderIndex.slice(
+              batchStart,
+              Math.min(batchStart + BATCH_SIZE, foldersWithOrderIndex.length),
+            );
+
+            const batchPromises = batch.map(({ folder, orderIndex }) =>
+              this.createCollectionHierarchy(
+                tx,
+                folder,
+                teamID,
+                parentID,
+                orderIndex,
+              )
+            );
+
+            const batchResults = await Promise.all(batchPromises);
+            teamCollections.push(...batchResults);
+          }
         } catch (error) {
           throw new ConflictException(error);
         }
-      });
+      }, { maxWait: 15000, timeout: 120000 }); // 2 minute timeout for large imports
     } catch (error) {
       console.error(
         'Error from TeamCollectionService.importCollectionsFromJSON',
@@ -260,6 +227,7 @@ export class TeamCollectionService {
       return E.left(TEAM_COLL_CREATION_FAILED);
     }
 
+    // Publish events in a single batch after transaction completes
     teamCollections.forEach((collection) =>
       this.pubsub.publish(
         `team_coll/${teamID}/coll_added`,
@@ -268,6 +236,86 @@ export class TeamCollectionService {
     );
 
     return E.right(teamCollections);
+  }
+
+  /**
+   * Create a collection hierarchy (collection -> requests -> child collections) recursively.
+   * This step-by-step approach ensures FK constraints are satisfied at each step,
+   * making it reliable for deeply nested OpenAPI/Postman imports.
+   *
+   * Optimizations:
+   * - Uses createMany for bulk request insertion
+   * - Processes sibling collections in parallel batches
+   * - Pre-computed orderIndexes enable parallel root collection creation
+   *
+   * @param tx Prisma transaction client
+   * @param folder CollectionFolder from client
+   * @param teamID The Team ID
+   * @param parentID The parent collection ID
+   * @param orderIndex OrderIndex of the collection
+   * @returns Created TeamCollection
+   */
+  private async createCollectionHierarchy(
+    tx: Prisma.TransactionClient,
+    folder: CollectionFolder,
+    teamID: string,
+    parentID: string | null,
+    orderIndex: number,
+  ): Promise<DBTeamCollection> {
+    // Step 1: Create the collection itself
+    const collection = await tx.teamCollection.create({
+      data: {
+        title: folder.name,
+        teamID,
+        parentID: parentID || undefined,
+        orderIndex,
+        data: folder.data ?? undefined,
+      },
+    });
+
+    // Step 2: Create all requests in this collection using bulk insert for better performance
+    if (folder.requests && folder.requests.length > 0) {
+      // Use createMany for bulk insert (much faster than individual creates)
+      await tx.teamRequest.createMany({
+        data: folder.requests.map((request, index) => ({
+          title: request.name,
+          teamID,
+          collectionID: collection.id,
+          request: request,
+          orderIndex: index + 1,
+        })),
+        skipDuplicates: false, // Ensure we catch any constraint violations
+      });
+    }
+
+    // Step 3: Create child collections (siblings) in parallel batches
+    // Siblings share the same parent (already exists), so they can be created in parallel
+    // We batch them to prevent connection pool exhaustion on very wide structures
+    if (folder.folders && folder.folders.length > 0) {
+      const BATCH_SIZE = 100; // Increased from 30 to 100 for faster processing
+
+      for (let batchStart = 0; batchStart < folder.folders.length; batchStart += BATCH_SIZE) {
+        const batch = folder.folders.slice(
+          batchStart,
+          Math.min(batchStart + BATCH_SIZE, folder.folders.length),
+        );
+
+        const childPromises = batch.map((childFolder, batchIndex) => {
+          const actualIndex = batchStart + batchIndex;
+          return this.createCollectionHierarchy(
+            tx,
+            childFolder,
+            teamID,
+            collection.id,
+            actualIndex + 1,
+          );
+        });
+
+        await Promise.all(childPromises);
+      }
+    }
+
+    return collection;
   }
 
   /**
@@ -770,8 +818,7 @@ export class TeamCollectionService {
             collection.right,
             null,
           );
-          if (E.isLeft(updatedCollection))
-            return E.left(updatedCollection.left);
+          if (E.isLeft(updatedCollection)) return E.left(updatedCollection.left);
 
           this.pubsub.publish(
             `team_coll/${collection.right.teamID}/coll_moved`,
@@ -807,11 +854,7 @@ export class TeamCollectionService {
         }
 
         // lock the rows of the destination collection and its siblings
-        await this.prisma.lockTeamCollectionByTeamAndParent(
-          tx,
-          destCollection.right.teamID,
-          destCollection.right.parentID,
-        );
+        await this.prisma.lockTeamCollectionByTeamAndParent(tx, destCollection.right.teamID, destCollection.right.parentID);
 
         // Change parent from null to teamCollection i.e collection becomes a child collection
         // Move root/child collection into another child collection and update orderIndexes of the previous parent
@@ -917,6 +960,7 @@ export class TeamCollectionService {
                 },
               });
             }
+
           } catch (error) {
             throw new ConflictException(error);
           }

@@ -17,15 +17,29 @@ export class MailerModule {
 
     const env = await loadInfraConfiguration();
 
-    // If mailer SMTP is DISABLED, return the module without any configuration (service, listener, etc.)
-    if (env.INFRA.MAILER_SMTP_ENABLE !== 'true') {
-      console.log('Mailer module is disabled');
+    // Check SendGrid from environment variables (not DB)
+    const useSendGrid = process.env.USE_SENDGRID === 'true';
+    // Check SMTP from DB config
+    const useSMTP = env.INFRA.MAILER_SMTP_ENABLE === 'true';
+
+    // If both SendGrid and SMTP are disabled, return module without configuration
+    if (!useSendGrid && !useSMTP) {
+      console.log('Mailer module is disabled (both SendGrid and SMTP are off)');
       return {
         module: MailerModule,
       };
     }
 
-    // If mailer is ENABLED, return the module with configuration (service, etc.)
+    // If SendGrid is enabled, return module without SMTP configuration
+    if (useSendGrid) {
+      console.log('Mailer module enabled with SendGrid');
+      return {
+        module: MailerModule,
+      };
+    }
+
+    // If SMTP is ENABLED, return the module with SMTP configuration
+    console.log('Mailer module enabled with SMTP');
 
     // Determine transport configuration based on custom config flag
     const transportOption = getTransportOption(env);
